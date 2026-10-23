@@ -1,5 +1,4 @@
 using System.IdentityModel.Tokens.Jwt;
-using System.Text;
 using JwtLearningDemo;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.JsonWebTokens;
@@ -16,9 +15,9 @@ builder.Services.AddSwaggerGen(options =>
 {
     options.SwaggerDoc("v1", new OpenApiInfo
     {
-        Title = ".NET 8 JWT Learning Demo",
+        Title = ".NET 8 JWT Learning Demo (RS256 Private/Public Key)",
         Version = "v1",
-        Description = "Step-by-step demo of JWT generation, custom LifetimeValidator, Authentication, and Authorization middleware."
+        Description = "Step-by-step demo of RS256 JWT generation (Private Key), custom LifetimeValidator, and API validation (Public Key)."
     });
 
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
@@ -48,10 +47,8 @@ builder.Services.AddSwaggerGen(options =>
 });
 
 // ============================================================================
-// 1. CONFIGURE AUTHENTICATION & JWT BEARER OPTIONS
+// 1. CONFIGURE AUTHENTICATION & JWT BEARER OPTIONS (USING RSA PUBLIC KEY ONLY!)
 // ============================================================================
-var signingKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(JwtSettings.SecretKey));
-
 builder.Services
     .AddAuthentication(options =>
     {
@@ -70,9 +67,10 @@ builder.Services
             ValidateAudience = true,
             ValidAudience = JwtSettings.Audience,
 
-            // Verify the cryptographic signature
+            // Verify the RS256 cryptographic signature using ONLY the RSA Public Key!
+            // (Notice: Your API endpoint does NOT need or have the RSA Private Key)
             ValidateIssuerSigningKey = true,
-            IssuerSigningKey = signingKey,
+            IssuerSigningKey = JwtSettings.ApiEndpointPublicKey,
 
             // Verify 'nbf' (notBefore) and 'exp' (expires)
             ValidateLifetime = true,
@@ -135,7 +133,8 @@ app.UseSwaggerUI();
 // 2. MIDDLEWARE PIPELINE ORDER MATTERS!
 // ============================================================================
 // Step A: UseAuthentication() reads the Authorization header, validates the JWT
-//         (calling ValidateTokenLifetime), and populates HttpContext.User.
+//         (signature via RSA Public Key + lifetime via ValidateTokenLifetime),
+//         and populates HttpContext.User.
 app.UseAuthentication();
 
 // Step B: UseAuthorization() checks [Authorize] / [Authorize(Roles = "...")] on

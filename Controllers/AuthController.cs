@@ -1,19 +1,22 @@
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
-using System.Text;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.IdentityModel.Tokens;
 
 namespace JwtLearningDemo.Controllers;
 
+/// <summary>
+/// Simulates the Auth Server / Identity Provider.
+/// Uses the RSA PRIVATE KEY (JwtSettings.AuthServerPrivateKey) + RS256 to sign tokens.
+/// </summary>
 [ApiController]
 [Route("api/[controller]")]
 [AllowAnonymous]
 public class AuthController : ControllerBase
 {
     /// <summary>
-    /// 1. Generate a standard user or admin JWT token (with 'nbf' and 'exp').
+    /// 1. Generate a standard user or admin JWT token signed with the RSA PRIVATE KEY (RS256).
     /// </summary>
     [HttpPost("token")]
     public IActionResult GenerateStandardToken(
@@ -33,9 +36,10 @@ public class AuthController : ControllerBase
             new("token_type", "user")
         };
 
-        // STEP 2: Create the SigningCredentials using our secret key + HMAC-SHA256
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(JwtSettings.SecretKey));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        // STEP 2: Sign using the Auth Server's RSA PRIVATE KEY + RS256 algorithm
+        var credentials = new SigningCredentials(
+            JwtSettings.AuthServerPrivateKey,
+            SecurityAlgorithms.RsaSha256);
 
         // STEP 3: Build the JwtSecurityToken (Header + Payload + Signature metadata)
         var jwtToken = new JwtSecurityToken(
@@ -51,7 +55,9 @@ public class AuthController : ControllerBase
 
         return Ok(new
         {
-            Scenario = $"Standard token for '{username}' with role '{role}' (valid for {expiresInMinutes} min)",
+            Scenario = $"RS256 token signed with RSA PRIVATE KEY for '{username}' (role '{role}', valid {expiresInMinutes} min)",
+            Algorithm = SecurityAlgorithms.RsaSha256,
+            KeyId = JwtSettings.AuthServerPrivateKey.KeyId,
             Token = tokenString,
             NotBeforeUtc = utcNow,
             ExpiresUtc = utcNow.AddMinutes(expiresInMinutes)
@@ -59,7 +65,7 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
-    /// 2. Generate a Service Token WITHOUT an 'exp' (expiration) claim.
+    /// 2. Generate a Service Token WITHOUT an 'exp' (expiration) claim, signed with the RSA PRIVATE KEY.
     /// Demonstrates your custom ValidateTokenLifetime allowing service tokens without expiry!
     /// </summary>
     [HttpPost("service-token-no-expiry")]
@@ -69,8 +75,9 @@ public class AuthController : ControllerBase
     {
         var notBefore = DateTimeOffset.UtcNow.AddMinutes(notBeforeOffsetMinutes);
 
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(JwtSettings.SecretKey));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        var credentials = new SigningCredentials(
+            JwtSettings.AuthServerPrivateKey,
+            SecurityAlgorithms.RsaSha256);
 
         var header = new JwtHeader(credentials);
 
@@ -92,8 +99,9 @@ public class AuthController : ControllerBase
         return Ok(new
         {
             Scenario = notBeforeOffsetMinutes > 0
-                ? $"Service token WITHOUT 'exp', but 'nbf' is {notBeforeOffsetMinutes} min in the future (will return 401!)"
-                : "Service token WITHOUT 'exp' (will be ACCEPTED by custom ValidateTokenLifetime!)",
+                ? $"RS256 Service token WITHOUT 'exp', but 'nbf' is {notBeforeOffsetMinutes} min in the future (will return 401!)"
+                : "RS256 Service token WITHOUT 'exp' (will be ACCEPTED by custom ValidateTokenLifetime!)",
+            Algorithm = SecurityAlgorithms.RsaSha256,
             Token = tokenString,
             NotBeforeUtc = notBefore.UtcDateTime,
             ExpiresUtc = (DateTime?)null
@@ -101,14 +109,15 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
-    /// 3. Generate an already-expired token so you can test 401 Unauthorized.
+    /// 3. Generate an already-expired RS256 token so you can test 401 Unauthorized.
     /// </summary>
     [HttpPost("expired-token")]
     public IActionResult GenerateExpiredToken([FromQuery] string username = "alice")
     {
         var utcNow = DateTime.UtcNow;
-        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(JwtSettings.SecretKey));
-        var credentials = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+        var credentials = new SigningCredentials(
+            JwtSettings.AuthServerPrivateKey,
+            SecurityAlgorithms.RsaSha256);
 
         var jwtToken = new JwtSecurityToken(
             issuer: JwtSettings.Issuer,
@@ -127,7 +136,8 @@ public class AuthController : ControllerBase
 
         return Ok(new
         {
-            Scenario = "Expired token (expired 10 minutes ago -> calling protected endpoints will return 401 Unauthorized)",
+            Scenario = "Expired RS256 token (expired 10 minutes ago -> calling protected endpoints will return 401 Unauthorized)",
+            Algorithm = SecurityAlgorithms.RsaSha256,
             Token = tokenString,
             NotBeforeUtc = utcNow.AddMinutes(-20),
             ExpiresUtc = utcNow.AddMinutes(-10)
@@ -135,8 +145,33 @@ public class AuthController : ControllerBase
     }
 
     /// <summary>
-    /// 4. Inspect/decode any JWT token string without validating its signature or lifetime,
-    /// so you can see the raw Header and Payload claims.
+    /// 4. View the RSA Public Key that your API Endpoint uses to verify signatures.
+    /// (Similar to an Auth Server's /.well-known/jwks.json endpoint)
+    /// </summary>
+    [HttpGet("public-key")]
+    public IActionResult GetPublicKey()
+    {
+        var jwk = JsonWebKeyConverter.ConvertFromRSASecurityKey(JwtSettings.ApiEndpointPublicKey);
+        return Ok(new
+        {
+            Description = "This is the RSA PUBLIC KEY configured on Program.cs (IssuerSigningKey). It can verify RS256 tokens, but cannot sign new tokens.",
+            KeyId = JwtSettings.ApiEndpointPublicKey.KeyId,
+            HasPrivateKey = JwtSettings.ApiEndpointPublicKey.PrivateKeyStatus,
+            PublicKeyPem = JwtSettings.GetPublicKeyPem(),
+            JsonWebKey = new
+            {
+                jwk.Kty,
+                jwk.Kid,
+                Alg = SecurityAlgorithms.RsaSha256,
+                jwk.N,
+                jwk.E
+            }
+        });
+    }
+
+    /// <summary>
+    /// 5. Inspect/decode any JWT token string without validating its signature or lifetime,
+    /// so you can see the raw Header (alg: RS256, kid: demo-rsa-key-1) and Payload claims.
     /// </summary>
     [HttpGet("inspect")]
     public IActionResult InspectToken([FromQuery] string token)
